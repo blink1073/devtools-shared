@@ -21,6 +21,10 @@ export interface MongoClusterOptions
   downloadDir?: string;
   downloadOptions?: DownloadOptions;
   oidc?: string;
+  rsTags?: Map<string,string>[];
+  rsArgs?: string[][];
+  shardArgs?: string[][];
+  mongosArgs?: string[][];
 }
 
 export class MongoCluster {
@@ -165,6 +169,9 @@ export class MongoCluster {
       }
 
       const primaryArgs = [...args];
+      if (options.rsArgs?.length > 0) {
+        primaryArgs.push(...options.rsArgs[0])
+      }
       debug('Starting primary', primaryArgs);
       const primary = await MongoServer.start({
         ...options,
@@ -180,17 +187,22 @@ export class MongoCluster {
       debug('Starting secondaries and arbiters', {
         secondaries,
         arbiters,
-        args,
+        args
       });
       cluster.servers.push(
         ...(await Promise.all(
-          range(secondaries + arbiters).map(() =>
-            MongoServer.start({
+          range(secondaries + arbiters).map((i) => {
+            const secondaryArgs = [...args];
+            if (i < options.rsArgs?.length) {
+              secondaryArgs.push(...options.rsArgs[i]);
+              debug('Adding secondary args', options.rsArgs[i])
+            }
+            return MongoServer.start({
               ...options,
-              args,
+              args: secondaryArgs,
               binary: 'mongod',
-            }),
-          ),
+            });
+          })
         )),
       );
 
@@ -200,11 +212,13 @@ export class MongoCluster {
           _id: replSetName,
           configsvr: args.includes('--configsvr'),
           members: cluster.servers.map((srv, i) => {
+            const tags = (i < options.rsTags.length) ? options.rsTags[i] : {};  
             return {
               _id: i,
               host: srv.hostport,
               arbiterOnly: i > 1 + secondaries,
               priority: i === 0 ? 1 : 0,
+              tags
             };
           }),
         };
@@ -236,37 +250,51 @@ export class MongoCluster {
 
       debug('starting config server and shard servers', shardArgs);
       const [configsvr, ...shardsvrs] = await Promise.all(
-        range(shards + 1).map((i) =>
-          MongoCluster.start({
+        range(shards + 1).map((i) => {
+          const args: string[] = [...shardArgs];
+          if (i == 0) {
+            args.push('--configsvr');
+          } else {
+            args.push('--shardsvr');
+            if (i - 1 < options.shardArgs?.length) {
+              args.push(...options.shardArgs[i - 1]);
+              debug('Adding shard args', options.shardArgs[i - 1]);
+            }
+          }
+          return MongoCluster.start({
             ...options,
-            args: [...shardArgs, i > 0 ? '--shardsvr' : '--configsvr'],
+            args,
             topology: 'replset',
-          }),
-        ),
+          });
+        }),
       );
       cluster.shards.push(configsvr, ...shardsvrs);
 
-      debug('starting mongos');
-      const mongos = await MongoServer.start({
-        ...options,
-        binary: 'mongos',
-        args: [
-          ...(options.args ?? []),
-          '--configdb',
-          `${configsvr.replSetName!}/${configsvr.hostport}`,
-        ],
-      });
-      cluster.servers.push(mongos);
-      await mongos.withClient(async (client) => {
-        for (const shard of shardsvrs) {
-          const shardSpec = `${shard.replSetName!}/${shard.hostport}`;
-          debug('adding shard', shardSpec);
-          await client.db('admin').command({
-            addShard: shardSpec,
-          });
-        }
-        debug('added shards');
-      });
+      const mongosArgs = options.mongosArgs ?? [[]];
+      for (let i = 0; i < mongosArgs.length; i++) {
+        debug('starting mongos');
+        const mongos = await MongoServer.start({
+          ...options,
+          binary: 'mongos',
+          args: [
+            ...(options.args ?? []),
+            ...mongosArgs[i],
+            '--configdb',
+            `${configsvr.replSetName!}/${configsvr.hostport}`,
+          ],
+        });
+        cluster.servers.push(mongos);
+        await mongos.withClient(async (client) => {
+          for (const shard of shardsvrs) {
+            const shardSpec = `${shard.replSetName!}/${shard.hostport}`;
+            debug('adding shard', shardSpec);
+            await client.db('admin').command({
+              addShard: shardSpec,
+            });
+          }
+          debug('added shards');
+        });
+      }
     }
     return cluster;
   }
