@@ -17,7 +17,7 @@ export interface RSMemberOptions {
 export interface RSOptions {
   arbiters?: number;
   secondaries?: number;
-  members?: RSMemberOptions[];
+  memberOptions?: RSMemberOptions[];
 }
 
 export interface ShardedOptions {
@@ -211,9 +211,9 @@ export class MongoCluster {
       }
 
       const primaryArgs = [...args];
-      const members = options.members || [{}];
-      if (members.length > 0) {
-        primaryArgs.push(...(members[0].args || []));
+      const memberOptions = options.memberOptions || [{}];
+      if (memberOptions.length > 0) {
+        primaryArgs.push(...(memberOptions[0].args || []));
       }
       debug('Starting primary', primaryArgs);
       const primary = await MongoServer.start({
@@ -236,9 +236,9 @@ export class MongoCluster {
         ...(await Promise.all(
           range(secondaries + arbiters).map((i) => {
             const secondaryArgs = [...args];
-            if (i + 1 < members.length) {
-              secondaryArgs.push(...(members[i + 1].args || []));
-              debug('Adding secondary args', members[i + 1].args || []);
+            if (i + 1 < memberOptions.length) {
+              secondaryArgs.push(...(memberOptions[i + 1].args || []));
+              debug('Adding secondary args', memberOptions[i + 1].args || []);
             }
             return MongoServer.start({
               ...options,
@@ -256,8 +256,8 @@ export class MongoCluster {
           configsvr: args.includes('--configsvr'),
           members: cluster.servers.map((srv, i) => {
             let options: RSMemberOptions = {};
-            if (i < members.length) {
-              options = members[i];
+            if (i < memberOptions.length) {
+              options = memberOptions[i];
             }
             let priority = i === 0 ? 1 : 0;
             if (options.priority !== undefined) {
