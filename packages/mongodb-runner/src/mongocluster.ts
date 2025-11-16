@@ -7,37 +7,63 @@ import type { MongoClientOptions } from 'mongodb';
 import { MongoClient } from 'mongodb';
 import { sleep, range, uuid, debug } from './util';
 import { OIDCMockProviderProcess } from './oidc';
+import { option } from 'yargs';
 
 export interface RSMemberOptions {
-  tags?: { [key: string]: string };
-  priority?: number;
   args?: string[];
+  priority?: number;
+  tags?: { [key: string]: string };
 }
-export interface MongoClusterOptions
-  extends Pick<
-    MongoServerOptions,
-    | 'logDir'
-    | 'tmpDir'
-    | 'args'
-    | 'binDir'
-    | 'docker'
-    | 'login'
-    | 'password'
-    | 'clientOptions'
-  > {
-  topology: 'standalone' | 'replset' | 'sharded';
+export interface RSOptions {
   arbiters?: number;
   secondaries?: number;
+  members?: RSMemberOptions[];
+}
+
+export interface ShardedOptions {
   shards?: number;
+  routers?: number;
+  configSrvOptions?: RSOptions;
+  shardOptions?: RSOptions[];
+  routerArgs?: string[][];
+}
+
+type CommonClusterOptions = Pick<
+  MongoServerOptions,
+  | 'logDir'
+  | 'tmpDir'
+  | 'args'
+  | 'binDir'
+  | 'docker'
+  | 'login'
+  | 'password'
+  | 'clientOptions'
+> & {
   version?: string;
   downloadDir?: string;
   downloadOptions?: DownloadOptions;
   oidc?: string;
-  rsMemberOptions?: RSMemberOptions[];
-  shardArgs?: string[][];
-  mongosArgs?: string[][];
   roles?: { [key: string]: string }[];
+};
+
+export interface StandaloneClusterOptions extends CommonClusterOptions {
+  topology: 'standalone';
 }
+
+export interface ReplSetClusterOptions extends CommonClusterOptions, RSOptions {
+  topology: 'replset';
+}
+
+export interface ShardedClusterOptions
+  extends CommonClusterOptions,
+    ShardedOptions {
+  topology: 'sharded';
+}
+
+export type MongoClusterOptions =
+  | StandaloneClusterOptions
+  | ReplSetClusterOptions
+  | ShardedClusterOptions;
 
 export class MongoCluster {
   private topology: MongoClusterOptions['topology'] = 'standalone';
@@ -185,9 +211,9 @@ export class MongoCluster {
       }
 
       const primaryArgs = [...args];
-      const rsMemberOptions = options.rsMemberOptions || [{}];
-      if (rsMemberOptions.length > 0) {
-        primaryArgs.push(...(rsMemberOptions[0].args || []));
+      const members = options.members || [{}];
+      if (members.length > 0) {
+        primaryArgs.push(...(members[0].args || []));
       }
       debug('Starting primary', primaryArgs);
       const primary = await MongoServer.start({
@@ -210,9 +236,9 @@ export class MongoCluster {
         ...(await Promise.all(
           range(secondaries + arbiters).map((i) => {
             const secondaryArgs = [...args];
-            if (i + 1 < rsMemberOptions.length) {
-              secondaryArgs.push(...(rsMemberOptions[i + 1].args || []));
-              debug('Adding secondary args', rsMemberOptions[i + 1].args || []);
+            if (i + 1 < members.length) {
+              secondaryArgs.push(...(members[i + 1].args || []));
+              debug('Adding secondary args', members[i + 1].args || []);
             }
             return MongoServer.start({
               ...options,
@@ -230,8 +256,8 @@ export class MongoCluster {
           configsvr: args.includes('--configsvr'),
           members: cluster.servers.map((srv, i) => {
             let options: RSMemberOptions = {};
-            if (i < rsMemberOptions.length) {
-              options = rsMemberOptions[i];
+            if (i < members.length) {
+              options = members[i];
             }
             let priority = i === 0 ? 1 : 0;
             if (options.priority !== undefined) {
@@ -285,25 +311,25 @@ export class MongoCluster {
       if (shardArgs.includes('--port')) {
         shardArgs.splice(shardArgs.indexOf('--port') + 1, 1, '0');
       }
-      const perShardArgs = options.shardArgs || [[]];
+      const allShardOptions = options.shardOptions || [{}];
 
       debug('starting config server and shard servers', shardArgs);
       const [configsvr, ...shardsvrs] = await Promise.all(
         range(shards + 1).map((i) => {
           const args: string[] = [...shardArgs];
+          let optionsSource: RSOptions = {};
           if (i === 0) {
             args.push('--configsvr');
+            optionsSource = options.configSrvOptions || {};
           } else {
-            if (i - 1 < perShardArgs.length) {
-              args.push(...perShardArgs[i - 1]);
-              debug('Adding shard args', perShardArgs[i - 1]);
-            }
-            if (!args.includes('--shardsvr')) {
-              args.push('--shardsvr');
+            args.push('--shardsvr');
+            if (i - 1 < allShardOptions.length) {
+              optionsSource = allShardOptions[i - 1];
             }
           }
           return MongoCluster.start({
             ...options,
+            ...optionsSource,
             args,
             topology: 'replset',
           });
@@ -311,21 +337,27 @@ export class MongoCluster {
       );
       cluster.shards.push(configsvr, ...shardsvrs);
 
-      const mongosArgs = options.mongosArgs ?? [[]];
-      for (let i = 0; i < mongosArgs.length; i++) {
-        debug('starting mongos');
+      const routerArgs = options.routerArgs ?? [[]];
+      const { routers = 1 } = options;
+      for (let i = 0; i < routers; i++) {
+        debug('starting mongos', i);
+        const args = [...(options.args ?? [])];
+        if (routerArgs.length > i - 1) {
+          args.push(...routerArgs[i]);
+        }
         const mongos = await MongoServer.start({
           ...options,
           binary: 'mongos',
           args: [
-            ...(options.args ?? []),
-            ...mongosArgs[i],
+            ...args,
             '--configdb',
             `${configsvr.replSetName!}/${configsvr.hostport}`,
           ],
         });
         cluster.servers.push(mongos);
-        await mongos.reinitialize();
+        if (options.login) {
+          await mongos.reinitialize();
+        }
         await mongos.withClient(async (client) => {
           for (const shard of shardsvrs) {
             const shardSpec = `${shard.replSetName!}/${shard.hostport}`;

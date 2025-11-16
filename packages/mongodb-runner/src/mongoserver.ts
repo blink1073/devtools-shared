@@ -174,7 +174,19 @@ export class MongoServer {
       commandline.push(options.binary);
     }
 
-    commandline.push(...(options.args ?? []));
+    // Make sure "--shardsvr" is included only once.
+    function dedupeShardSrv(arr: string[]) {
+      let found = false;
+      return arr.filter((arg) => {
+        if (arg === '--shardsvr') {
+          if (found) return false;
+          found = true;
+        }
+        return true;
+      });
+    }
+
+    commandline.push(...dedupeShardSrv(options.args ?? []));
     if (!options.args?.includes('--port')) commandline.push('--port', '0');
     if (!options.args?.includes('--dbpath') && options.binary === 'mongod')
       commandline.push('--dbpath', options.docker ? '/tmp' : srv.dbPath!);

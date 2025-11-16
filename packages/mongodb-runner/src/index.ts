@@ -4,6 +4,8 @@ export {
   MongoCluster,
   MongoClusterOptions,
   RSMemberOptions,
+  RSOptions,
+  ShardedOptions,
 } from './mongocluster';
 export type { ConnectionString } from 'mongodb-connection-string-url';
 export { prune, start, stop, exec, instances } from './runner-helpers';
