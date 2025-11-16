@@ -2,6 +2,7 @@
 import yargs from 'yargs';
 import os from 'os';
 import path from 'path';
+import { promises as fs } from 'fs';
 import createDebug from 'debug';
 import * as utilities from './index';
 import { ConnectionString } from 'mongodb-connection-string-url';
@@ -74,6 +75,10 @@ import type { MongoClientOptions } from 'mongodb';
       type: 'string',
       describe: 'Configure OIDC authentication on the server',
     })
+    .option('config', {
+      type: 'string',
+      describe: 'Path to JSON config file',
+    })
     .option('debug', { type: 'boolean', describe: 'Enable debug output' })
     .command('start', 'Start a MongoDB instance')
     .command('stop', 'Stop a MongoDB instance')
@@ -85,7 +90,34 @@ import type { MongoClientOptions } from 'mongodb';
     )
     .demandCommand(1, 'A command needs to be provided')
     .help().argv;
+
   const [command, ...args] = argv._.map(String);
+
+  // Handle loading from a config file, without overriding cli or env args.
+  if (argv.config) {
+    console.log(`Loading config from file ${argv.config}`);
+    const configContents: Record<string, unknown> = JSON.parse(
+      await fs.readFile(argv.config, 'utf8'),
+    );
+    Object.keys(configContents).forEach((key) => {
+      // Allow overriding the default dirs and the topology.
+      if (Object.keys(argv).includes(key)) {
+        if (key === 'runnerDir') {
+          if (argv[key] !== defaultRunnerDir) {
+            return;
+          }
+        } else if (key === 'tmpDir') {
+          if (argv[key] !== os.tmpdir()) {
+            return;
+          }
+        } else if (key !== 'topology') {
+          return;
+        }
+      }
+      argv[key] = configContents[key];
+    });
+  }
+
   if (argv.debug) {
     createDebug.enable('mongodb-runner');
   }

@@ -7,7 +7,6 @@ import type { MongoClientOptions } from 'mongodb';
 import { MongoClient } from 'mongodb';
 import { sleep, range, uuid, debug } from './util';
 import { OIDCMockProviderProcess } from './oidc';
-import { option } from 'yargs';
 
 export interface RSMemberOptions {
   args?: string[];

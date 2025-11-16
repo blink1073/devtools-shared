@@ -299,6 +299,7 @@ export class MongoServer {
 
   async addAdminUser(roles?: { [key: string]: string }[]) {
     debug('adding admin user', this.hostport);
+    roles = roles ?? [{ role: 'userAdminAnyDatabase', db: 'admin' }];
     await this.withClient(async (client) => {
       await client
         .db('admin')
